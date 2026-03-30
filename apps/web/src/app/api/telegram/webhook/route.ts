@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@agents/db";
-import { runAgent } from "@agents/agent";
+import {
+  createServerClient,
+  decrypt,
+  getPendingToolCall,
+  updateToolCallStatus,
+} from "@agents/db";
+import { runAgent, executeGitHubTool } from "@agents/agent";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -41,7 +46,6 @@ async function sendTelegramMessage(
   }
 }
 
-/** Telegram sends "/cmd@BotName args" when the user picks a command from the menu. */
 function parseBotCommand(messageText: string): { command: string; args: string } {
   const trimmed = messageText.trim();
   const i = trimmed.indexOf(" ");
@@ -60,6 +64,24 @@ async function answerCallbackQuery(callbackQueryId: string, text: string) {
   });
 }
 
+async function resolveGitHubToken(db: ReturnType<typeof createServerClient>, userId: string): Promise<string | undefined> {
+  const { data: integration } = await db
+    .from("user_integrations")
+    .select("encrypted_tokens")
+    .eq("user_id", userId)
+    .eq("provider", "github")
+    .eq("status", "active")
+    .single();
+
+  if (!integration?.encrypted_tokens) return undefined;
+  try {
+    return decrypt(integration.encrypted_tokens);
+  } catch (err) {
+    console.error("Failed to decrypt GitHub token:", err);
+    return undefined;
+  }
+}
+
 export async function POST(request: Request) {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
   if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
@@ -69,19 +91,50 @@ export async function POST(request: Request) {
   const update: TelegramUpdate = await request.json();
   const db = createServerClient();
 
-  // Handle callback queries (confirmation buttons)
   if (update.callback_query) {
     const cb = update.callback_query;
     const [action, toolCallId] = cb.data.split(":");
 
     if (action === "approve" && toolCallId) {
-      await db
-        .from("tool_calls")
-        .update({ status: "approved" })
-        .eq("id", toolCallId)
-        .eq("status", "pending_confirmation");
+      const toolCall = await getPendingToolCall(db, toolCallId);
+      if (!toolCall) {
+        await answerCallbackQuery(cb.id, "Ya fue procesado");
+        return NextResponse.json({ ok: true });
+      }
+
+      await updateToolCallStatus(db, toolCallId, "approved");
       await answerCallbackQuery(cb.id, "Aprobado");
       await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
+
+      if (toolCall.tool_name.startsWith("github_")) {
+        const { data: session } = await db
+          .from("agent_sessions")
+          .select("user_id")
+          .eq("id", toolCall.session_id)
+          .single();
+
+        if (session) {
+          const token = await resolveGitHubToken(db, session.user_id);
+          if (token) {
+            try {
+              const result = await executeGitHubTool(
+                toolCall.tool_name,
+                toolCall.arguments_json,
+                token
+              );
+              await updateToolCallStatus(db, toolCallId, "executed", result);
+              const summary = formatToolResult(toolCall.tool_name, result);
+              await sendTelegramMessage(cb.message.chat.id, summary);
+            } catch (err) {
+              await updateToolCallStatus(db, toolCallId, "failed", { error: String(err) });
+              await sendTelegramMessage(cb.message.chat.id, `Error: ${String(err)}`);
+            }
+          } else {
+            await updateToolCallStatus(db, toolCallId, "failed", { error: "GitHub not connected" });
+            await sendTelegramMessage(cb.message.chat.id, "GitHub no está conectado.");
+          }
+        }
+      }
     } else if (action === "reject" && toolCallId) {
       await db
         .from("tool_calls")
@@ -105,7 +158,6 @@ export async function POST(request: Request) {
   const text = message.text.trim();
   const { command, args } = parseBotCommand(text);
 
-  // Handle /start (/start@BotName optional)
   if (command === "/start") {
     await sendTelegramMessage(
       chatId,
@@ -114,7 +166,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  // Handle /link CODE (/link@BotName CODE when chosen from the command list)
   if (command === "/link") {
     const code = args.trim().toUpperCase();
     if (!code) {
@@ -157,7 +208,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  // Resolve user from telegram_user_id
   const { data: telegramAccount } = await db
     .from("telegram_accounts")
     .select("*")
@@ -174,7 +224,6 @@ export async function POST(request: Request) {
 
   const userId = telegramAccount.user_id;
 
-  // Get or create session
   let session = await db
     .from("agent_sessions")
     .select("*")
@@ -206,7 +255,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  // Load profile, tools, integrations
   const { data: profile } = await db
     .from("profiles")
     .select("agent_system_prompt")
@@ -223,6 +271,8 @@ export async function POST(request: Request) {
     .select("*")
     .eq("user_id", userId)
     .eq("status", "active");
+
+  const githubToken = await resolveGitHubToken(db, userId);
 
   try {
     const result = await runAgent({
@@ -246,22 +296,15 @@ export async function POST(request: Request) {
         status: i.status as "active" | "revoked" | "expired",
         created_at: i.created_at as string,
       })),
+      githubToken,
     });
 
-    // Check if response contains a pending confirmation
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(result.response);
-    } catch {
-      // not JSON, regular text response
-    }
-
-    if (parsed?.pending_confirmation) {
-      await sendTelegramMessage(chatId, String(parsed.message ?? "Se requiere confirmación."), {
+    if (result.pendingConfirmation) {
+      await sendTelegramMessage(chatId, result.pendingConfirmation.message, {
         inline_keyboard: [
           [
-            { text: "Aprobar", callback_data: `approve:${parsed.tool_call_id}` },
-            { text: "Cancelar", callback_data: `reject:${parsed.tool_call_id}` },
+            { text: "Aprobar", callback_data: `approve:${result.pendingConfirmation.tool_call_id}` },
+            { text: "Cancelar", callback_data: `reject:${result.pendingConfirmation.tool_call_id}` },
           ],
         ],
       });
@@ -274,4 +317,14 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: true });
+}
+
+function formatToolResult(toolName: string, result: Record<string, unknown>): string {
+  if (toolName === "github_create_issue") {
+    return `Issue creado: ${result.issue_url}`;
+  }
+  if (toolName === "github_create_repo") {
+    return `Repositorio creado: ${result.html_url}`;
+  }
+  return JSON.stringify(result, null, 2);
 }

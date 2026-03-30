@@ -2,10 +2,19 @@
 
 import { useState, useRef, useEffect } from "react";
 
+interface PendingConfirmation {
+  tool_call_id: string;
+  tool_name: string;
+  message: string;
+  args: Record<string, unknown>;
+}
+
 interface Message {
   role: string;
   content: string;
   created_at?: string;
+  confirmation?: PendingConfirmation;
+  confirmationStatus?: "pending" | "approved" | "rejected";
 }
 
 interface Props {
@@ -22,6 +31,64 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  async function handleConfirm(index: number, action: "approve" | "reject") {
+    const msg = messages[index];
+    if (!msg.confirmation) return;
+
+    setMessages((prev) =>
+      prev.map((m, i) =>
+        i === index ? { ...m, confirmationStatus: action === "approve" ? "approved" : "rejected" } : m
+      )
+    );
+
+    try {
+      const res = await fetch("/api/chat/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toolCallId: msg.confirmation.tool_call_id,
+          action,
+        }),
+      });
+      const data = await res.json();
+
+      if (action === "approve" && data.result) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: formatToolResult(msg.confirmation!.tool_name, data.result),
+          },
+        ]);
+      } else if (action === "reject") {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "Acción cancelada." },
+        ]);
+      } else if (data.message) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.message },
+        ]);
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Error al procesar la confirmación." },
+      ]);
+    }
+  }
+
+  function formatToolResult(toolName: string, result: Record<string, unknown>): string {
+    if (toolName === "github_create_issue") {
+      return `Issue creado: ${result.issue_url}`;
+    }
+    if (toolName === "github_create_repo") {
+      return `Repositorio creado: ${result.html_url}`;
+    }
+    return JSON.stringify(result, null, 2);
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -54,7 +121,9 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
           ...prev,
           {
             role: "assistant",
-            content: `Se requiere confirmación: ${data.pendingConfirmation.message}\n\n¿Deseas proceder?`,
+            content: data.pendingConfirmation.message,
+            confirmation: data.pendingConfirmation,
+            confirmationStatus: "pending",
           },
         ]);
       }
@@ -94,6 +163,28 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
                 }`}
               >
                 <p className="whitespace-pre-wrap">{msg.content}</p>
+                {msg.confirmation && msg.confirmationStatus === "pending" && (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      onClick={() => handleConfirm(i, "approve")}
+                      className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                    >
+                      Aprobar
+                    </button>
+                    <button
+                      onClick={() => handleConfirm(i, "reject")}
+                      className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+                {msg.confirmation && msg.confirmationStatus === "approved" && (
+                  <p className="mt-2 text-xs font-medium text-green-700 dark:text-green-400">Aprobado</p>
+                )}
+                {msg.confirmation && msg.confirmationStatus === "rejected" && (
+                  <p className="mt-2 text-xs font-medium text-red-600 dark:text-red-400">Cancelado</p>
+                )}
               </div>
             </div>
           ))}

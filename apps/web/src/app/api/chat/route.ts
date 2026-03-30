@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createServerClient } from "@agents/db";
+import { createServerClient, decrypt } from "@agents/db";
 import { runAgent } from "@agents/agent";
 
 export async function POST(request: Request) {
@@ -34,6 +34,18 @@ export async function POST(request: Request) {
       .select("*")
       .eq("user_id", user.id)
       .eq("status", "active");
+
+    let githubToken: string | undefined;
+    const githubIntegration = (integrations ?? []).find(
+      (i: Record<string, unknown>) => i.provider === "github"
+    );
+    if (githubIntegration?.encrypted_tokens) {
+      try {
+        githubToken = decrypt(githubIntegration.encrypted_tokens as string);
+      } catch (err) {
+        console.error("Failed to decrypt GitHub token:", err);
+      }
+    }
 
     let session = await supabase
       .from("agent_sessions")
@@ -86,15 +98,12 @@ export async function POST(request: Request) {
         status: i.status as "active" | "revoked" | "expired",
         created_at: i.created_at as string,
       })),
+      githubToken,
     });
 
-    const pendingConfirmation = result.response.includes("pending_confirmation")
-      ? JSON.parse(result.response)
-      : null;
-
     return NextResponse.json({
-      response: pendingConfirmation ? null : result.response,
-      pendingConfirmation,
+      response: result.pendingConfirmation ? null : result.response,
+      pendingConfirmation: result.pendingConfirmation ?? null,
       toolCalls: result.toolCalls,
     });
   } catch (error) {
