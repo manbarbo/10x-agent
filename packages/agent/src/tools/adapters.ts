@@ -6,6 +6,7 @@ import { TOOL_CATALOG } from "@agents/types";
 import { TOOL_SCHEMAS } from "./schemas";
 import { withTracking } from "./withTracking";
 import { executeBash } from "./bashExec";
+import { executeReadFile, executeWriteFile, executeEditFile } from "./fileTools";
 
 const GITHUB_API = "https://api.github.com";
 const GITHUB_UA = "10x-builders-agent/1.0";
@@ -133,7 +134,7 @@ type ToolHandlers = {
   [K in string]: (input: any, ctx: ToolContext) => Promise<Record<string, unknown>>;
 };
 
-const TOOL_HANDLERS: ToolHandlers = {
+export const TOOL_HANDLERS: ToolHandlers = {
   get_user_preferences: async (_input, ctx) => {
     const { getProfile } = await import("@agents/db");
     const profile = await getProfile(ctx.db, ctx.userId);
@@ -161,6 +162,21 @@ const TOOL_HANDLERS: ToolHandlers = {
 
   github_create_repo: async (input, ctx) =>
     executeGitHubTool("github_create_repo", input, ctx.githubToken!),
+
+  read_file: async (input: { path: string; offset?: number; limit?: number }) => {
+    const result = await executeReadFile(input);
+    return result as unknown as Record<string, unknown>;
+  },
+
+  write_file: async (input: { path: string; content: string }) => {
+    const result = await executeWriteFile(input);
+    return result as unknown as Record<string, unknown>;
+  },
+
+  edit_file: async (input: { path: string; old_string: string; new_string: string }) => {
+    const result = await executeEditFile(input);
+    return result as unknown as Record<string, unknown>;
+  },
 
   bash: async (input: { terminal: string; prompt: string }) => {
     const result = await executeBash(input.terminal, input.prompt);

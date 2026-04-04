@@ -20,9 +20,9 @@ import {
   getToolRisk,
 } from "@agents/types";
 import { createChatModel } from "./model";
-import { buildLangChainTools } from "./tools/adapters";
+import { buildLangChainTools, TOOL_HANDLERS } from "./tools/adapters";
+import type { ToolContext } from "./tools/adapters";
 import {
-  getSessionMessages,
   addMessage,
   createToolCall,
   updateToolCallStatus,
@@ -68,6 +68,20 @@ function buildConfirmationMessage(
       return `Se requiere confirmación para crear el issue "${args.title}" en ${args.owner}/${args.repo}.`;
     case "github_create_repo":
       return `Se requiere confirmación para crear el repositorio "${args.name}"${args.isPrivate ? " (privado)" : ""}.`;
+    case "write_file": {
+      const path = String(args.path ?? "");
+      const content = String(args.content ?? "");
+      const preview = content.length > 300 ? `${content.slice(0, 300)}…` : content;
+      return `Se requiere confirmación para crear el archivo \`${path}\` con el siguiente contenido:\n\`\`\`\n${preview}\n\`\`\``;
+    }
+    case "edit_file": {
+      const path = String(args.path ?? "");
+      const oldStr = String(args.old_string ?? "");
+      const newStr = String(args.new_string ?? "");
+      const oldPreview = oldStr.length > 200 ? `${oldStr.slice(0, 200)}…` : oldStr;
+      const newPreview = newStr.length > 200 ? `${newStr.slice(0, 200)}…` : newStr;
+      return `Se requiere confirmación para editar \`${path}\`.\n\n**Fragmento a reemplazar:**\n\`\`\`\n${oldPreview}\n\`\`\`\n\n**Nuevo contenido:**\n\`\`\`\n${newPreview}\n\`\`\``;
+    }
     case "bash": {
       const prompt = String(args.prompt ?? "");
       const preview = prompt.length > 200 ? `${prompt.slice(0, 200)}…` : prompt;
@@ -95,14 +109,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   } = input;
 
   const model = createChatModel();
-  const lcTools = buildLangChainTools({
-    db,
-    userId,
-    sessionId,
-    enabledTools,
-    integrations,
-    githubToken,
-  });
+  const toolCtx: ToolContext = { db, userId, sessionId, enabledTools, integrations, githubToken };
+  const lcTools = buildLangChainTools(toolCtx);
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
 
@@ -111,7 +119,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   async function agentNode(
     state: typeof GraphState.State
   ): Promise<Partial<typeof GraphState.State>> {
-    const response = await modelWithTools.invoke(state.messages);
+    // Inject SystemMessage fresh so it is never accumulated in state.messages.
+    const response = await modelWithTools.invoke([
+      new SystemMessage(state.systemPrompt),
+      ...state.messages,
+    ]);
     return { messages: [response] };
   }
 
@@ -160,25 +172,45 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         }
 
         await updateToolCallStatus(db, record.id, "approved");
+
+        // Call the handler directly to avoid withTracking creating a second DB record.
+        const confirmedHandler = TOOL_HANDLERS[toolId];
+        try {
+          const result = await confirmedHandler(tc.args as Record<string, unknown>, toolCtx);
+          await updateToolCallStatus(db, record.id, "executed", result);
+          results.push(new ToolMessage({ content: JSON.stringify(result), tool_call_id: tc.id! }));
+        } catch (err) {
+          const errResult = { error: String(err) };
+          await updateToolCallStatus(db, record.id, "failed", errResult);
+          results.push(new ToolMessage({ content: JSON.stringify(errResult), tool_call_id: tc.id! }));
+        }
+        continue;
       }
 
-      // Execute the tool
+      // Execute non-confirmed tools (withTracking handles DB record creation).
       const matchingTool = lcTools.find((t) => t.name === tc.name);
-      if (matchingTool) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const rawResult = await (matchingTool as any).invoke(tc.args);
-          results.push(
-            new ToolMessage({ content: String(rawResult), tool_call_id: tc.id! })
-          );
-        } catch (err) {
-          results.push(
-            new ToolMessage({
-              content: JSON.stringify({ error: String(err) }),
-              tool_call_id: tc.id!,
-            })
-          );
-        }
+      if (!matchingTool) {
+        results.push(
+          new ToolMessage({
+            content: JSON.stringify({ error: `Tool '${tc.name}' not available` }),
+            tool_call_id: tc.id!,
+          })
+        );
+        continue;
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rawResult = await (matchingTool as any).invoke(tc.args);
+        results.push(
+          new ToolMessage({ content: String(rawResult), tool_call_id: tc.id! })
+        );
+      } catch (err) {
+        results.push(
+          new ToolMessage({
+            content: JSON.stringify({ error: String(err) }),
+            tool_call_id: tc.id!,
+          })
+        );
       }
     }
 
@@ -221,26 +253,13 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       config
     );
   } else {
-    // New message — save it and invoke fresh
+    // New message — persist to DB (audit log) then append to checkpointer state.
+    // The checkpointer is the sole source of truth for message history; we never
+    // reconstruct from DB to avoid duplicating messages across invocations.
     await addMessage(db, sessionId, "user", message!);
 
-    const history = await getSessionMessages(db, sessionId, 30);
-    const priorMessages: BaseMessage[] = history
-      .filter((m) => m.role !== "user" || m.content !== message)
-      .map((m) => {
-        if (m.role === "user") return new HumanMessage(m.content);
-        if (m.role === "assistant") return new AIMessage(m.content);
-        return new HumanMessage(m.content);
-      });
-
-    const initialMessages: BaseMessage[] = [
-      new SystemMessage(systemPrompt),
-      ...priorMessages,
-      new HumanMessage(message!),
-    ];
-
     finalState = await app.invoke(
-      { messages: initialMessages, sessionId, userId, systemPrompt },
+      { messages: [new HumanMessage(message!)], sessionId, userId, systemPrompt },
       config
     );
   }
