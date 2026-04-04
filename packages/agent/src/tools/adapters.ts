@@ -162,13 +162,6 @@ const TOOL_HANDLERS: ToolHandlers = {
     executeGitHubTool("github_create_repo", input, ctx.githubToken!),
 };
 
-const CONFIRMATION_MESSAGES: Partial<Record<string, (input: Record<string, unknown>) => string>> = {
-  github_create_issue: (input) =>
-    `Se requiere confirmación para crear el issue "${input.title}" en ${input.owner}/${input.repo}.`,
-  github_create_repo: (input) =>
-    `Se requiere confirmación para crear el repositorio "${input.name}"${input.isPrivate ? " (privado)" : ""}.`,
-};
-
 export function buildLangChainTools(ctx: ToolContext) {
   const tools = [];
 
@@ -179,9 +172,7 @@ export function buildLangChainTools(ctx: ToolContext) {
     const handler = TOOL_HANDLERS[def.id];
     if (!schema || !handler) continue;
 
-    const trackedHandler = withTracking(def.id, handler, ctx, {
-      confirmationMessage: CONFIRMATION_MESSAGES[def.id],
-    });
+    const trackedHandler = withTracking(def.id, handler, ctx);
 
     tools.push(
       tool(trackedHandler, {

@@ -7,9 +7,10 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@langchain/core": "^0.3",
-    "@langchain/langgraph": "^0.2",
-    "@langchain/openai": "^0.4",
+    "@langchain/core": "^1.0",
+    "@langchain/langgraph": "^1.0",
+    "@langchain/langgraph-checkpoint-postgres": "^1.0",
+    "@langchain/openai": "^1.0",
     "@agents/db": "*",
     "@agents/types": "*",
     "zod": "^3"

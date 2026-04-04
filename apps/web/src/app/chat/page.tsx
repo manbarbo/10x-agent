@@ -26,16 +26,61 @@ export default async function ChatPage() {
   const allSessions = sessions ?? [];
   const currentSession = allSessions[0] ?? null;
 
-  let sessionMessages: Array<{ role: string; content: string; created_at: string }> = [];
+  let sessionMessages: Array<{ role: string; content: string; created_at: string; structured_payload?: Record<string, unknown> }> = [];
+  let initialPendingToolCallId: string | null = null;
+  let initialPendingMessage: string | null = null;
+  let initialPendingToolName: string | null = null;
+  let initialPendingArgs: Record<string, unknown> | null = null;
+
   if (currentSession) {
     const { data } = await supabase
       .from("agent_messages")
-      .select("role, content, created_at")
+      .select("role, content, created_at, structured_payload")
       .eq("session_id", currentSession.id)
       .order("created_at", { ascending: true })
       .limit(50);
     sessionMessages = data ?? [];
+
+    // Find the most recent unresolved pending confirmation
+    const { data: pendingCalls } = await supabase
+      .from("tool_calls")
+      .select("*")
+      .eq("session_id", currentSession.id)
+      .eq("status", "pending_confirmation")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (pendingCalls && pendingCalls.length > 0) {
+      const pc = pendingCalls[0];
+      initialPendingToolCallId = pc.id as string;
+      initialPendingToolName = pc.tool_name as string;
+      initialPendingArgs = pc.arguments_json as Record<string, unknown>;
+
+      // Find the corresponding agent_message with the confirmation text
+      const confirmMsg = [...sessionMessages]
+        .reverse()
+        .find(
+          (m) =>
+            m.structured_payload &&
+            (m.structured_payload as Record<string, unknown>).type === "pending_confirmation" &&
+            (m.structured_payload as Record<string, unknown>).tool_call_id === pc.id
+        );
+      initialPendingMessage =
+        (confirmMsg?.structured_payload as Record<string, unknown> | undefined)?.message as string ??
+        confirmMsg?.content ??
+        `Se requiere confirmación para "${pc.tool_name}".`;
+    }
   }
+
+  const initialPendingConfirmation =
+    initialPendingToolCallId
+      ? {
+          tool_call_id: initialPendingToolCallId,
+          tool_name: initialPendingToolName!,
+          message: initialPendingMessage!,
+          args: initialPendingArgs!,
+        }
+      : null;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -71,6 +116,7 @@ export default async function ChatPage() {
         initialMessages={sessionMessages}
         sessions={allSessions}
         currentSessionId={currentSession?.id ?? null}
+        initialPendingConfirmation={initialPendingConfirmation}
       />
     </div>
   );

@@ -27,9 +27,10 @@ interface SessionItem {
 
 interface Props {
   agentName: string;
-  initialMessages: Message[];
+  initialMessages: Array<{ role: string; content: string; created_at?: string; structured_payload?: Record<string, unknown> }>;
   sessions: SessionItem[];
   currentSessionId: string | null;
+  initialPendingConfirmation: PendingConfirmation | null;
 }
 
 function formatSessionDate(dateStr: string): string {
@@ -37,8 +38,61 @@ function formatSessionDate(dateStr: string): string {
   return d.toLocaleDateString("es", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-export function ChatInterface({ agentName, initialMessages, sessions, currentSessionId }: Props) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+function buildInitialMessages(
+  rawMessages: Props["initialMessages"],
+  pending: PendingConfirmation | null
+): Message[] {
+  const msgs: Message[] = rawMessages.map((m) => {
+    const sp = m.structured_payload as Record<string, unknown> | undefined;
+    if (sp?.type === "pending_confirmation") {
+      return {
+        role: m.role,
+        content: m.content,
+        created_at: m.created_at,
+        confirmation: {
+          tool_call_id: sp.tool_call_id as string,
+          tool_name: sp.tool_name as string,
+          message: sp.message as string,
+          args: sp.args as Record<string, unknown>,
+        },
+        // Will be set to "pending" below if it matches the still-unresolved call
+        confirmationStatus: "approved",
+      };
+    }
+    return { role: m.role, content: m.content, created_at: m.created_at };
+  });
+
+  // Mark the message that corresponds to the active pending confirmation as "pending"
+  if (pending) {
+    const idx = msgs.findIndex(
+      (m) => m.confirmation?.tool_call_id === pending.tool_call_id
+    );
+    if (idx !== -1) {
+      msgs[idx] = { ...msgs[idx], confirmationStatus: "pending" };
+    } else {
+      // No matching message found — append a synthetic one
+      msgs.push({
+        role: "assistant",
+        content: pending.message,
+        confirmation: pending,
+        confirmationStatus: "pending",
+      });
+    }
+  }
+
+  return msgs;
+}
+
+export function ChatInterface({
+  agentName,
+  initialMessages,
+  sessions,
+  currentSessionId,
+  initialPendingConfirmation,
+}: Props) {
+  const [messages, setMessages] = useState<Message[]>(() =>
+    buildInitialMessages(initialMessages, initialPendingConfirmation)
+  );
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(currentSessionId);
@@ -57,13 +111,33 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
 
   async function handleSwitchSession(sessionId: string) {
     if (sessionId === activeSessionId) return;
-    const { data } = await supabase
+
+    const { data: rawMsgs } = await supabase
       .from("agent_messages")
-      .select("role, content, created_at")
+      .select("role, content, created_at, structured_payload")
       .eq("session_id", sessionId)
       .order("created_at", { ascending: true })
       .limit(50);
-    setMessages(data ?? []);
+
+    const { data: pendingCalls } = await supabase
+      .from("tool_calls")
+      .select("id, tool_name, arguments_json")
+      .eq("session_id", sessionId)
+      .eq("status", "pending_confirmation")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const pending: PendingConfirmation | null =
+      pendingCalls && pendingCalls.length > 0
+        ? {
+            tool_call_id: pendingCalls[0].id,
+            tool_name: pendingCalls[0].tool_name,
+            message: `Se requiere confirmación para "${pendingCalls[0].tool_name}".`,
+            args: pendingCalls[0].arguments_json ?? {},
+          }
+        : null;
+
+    setMessages(buildInitialMessages(rawMsgs ?? [], pending));
     setActiveSessionId(sessionId);
   }
 
@@ -89,10 +163,13 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
 
     setMessages((prev) =>
       prev.map((m, i) =>
-        i === index ? { ...m, confirmationStatus: action === "approve" ? "approved" : "rejected" } : m
+        i === index
+          ? { ...m, confirmationStatus: action === "approve" ? "approved" : "rejected" }
+          : m
       )
     );
 
+    setLoading(true);
     try {
       const res = await fetch("/api/chat/confirm", {
         method: "POST",
@@ -104,23 +181,23 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
       });
       const data = await res.json();
 
-      if (action === "approve" && data.result) {
+      if (data.response) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.response },
+        ]);
+      }
+
+      // Another tool in the resumed graph may require confirmation too
+      if (data.pendingConfirmation) {
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: formatToolResult(msg.confirmation!.tool_name, data.result),
+            content: data.pendingConfirmation.message,
+            confirmation: data.pendingConfirmation,
+            confirmationStatus: "pending",
           },
-        ]);
-      } else if (action === "reject") {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: "Accion cancelada." },
-        ]);
-      } else if (data.message) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: data.message },
         ]);
       }
     } catch {
@@ -128,17 +205,9 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
         ...prev,
         { role: "assistant", content: "Error al procesar la confirmacion." },
       ]);
+    } finally {
+      setLoading(false);
     }
-  }
-
-  function formatToolResult(toolName: string, result: Record<string, unknown>): string {
-    if (toolName === "github_create_issue") {
-      return `Issue creado: ${result.issue_url}`;
-    }
-    if (toolName === "github_create_repo") {
-      return `Repositorio creado: ${result.html_url}`;
-    }
-    return JSON.stringify(result, null, 2);
   }
 
   async function handleSend(e: React.FormEvent) {
@@ -189,6 +258,7 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
   }
 
   const isReadOnly = !activeSessionId;
+  const hasPendingConfirmation = messages.some((m) => m.confirmationStatus === "pending");
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -288,13 +358,15 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
                     <div className="mt-3 flex gap-2">
                       <button
                         onClick={() => handleConfirm(i, "approve")}
-                        className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                        disabled={loading}
+                        className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
                       >
                         Aprobar
                       </button>
                       <button
                         onClick={() => handleConfirm(i, "reject")}
-                        className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                        disabled={loading}
+                        className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
                       >
                         Cancelar
                       </button>
@@ -320,8 +392,13 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
           </div>
         </div>
 
-        {/* Input */}
+        {/* Input — disabled while a confirmation is pending */}
         <div className="border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          {hasPendingConfirmation && (
+            <p className="mx-auto mb-2 max-w-2xl text-center text-xs text-amber-600 dark:text-amber-400">
+              Aprueba o cancela la acción pendiente antes de continuar.
+            </p>
+          )}
           <form
             onSubmit={handleSend}
             className="mx-auto flex max-w-2xl gap-2"
@@ -331,12 +408,12 @@ export function ChatInterface({ agentName, initialMessages, sessions, currentSes
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Escribe tu mensaje..."
-              disabled={loading || isReadOnly}
+              disabled={loading || isReadOnly || hasPendingConfirmation}
               className="flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
             />
             <button
               type="submit"
-              disabled={loading || !input.trim() || isReadOnly}
+              disabled={loading || !input.trim() || isReadOnly || hasPendingConfirmation}
               className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
               Enviar
