@@ -70,6 +70,36 @@ function buildConfirmationMessage(
       return `Se requiere confirmación para crear el issue "${args.title}" en ${args.owner}/${args.repo}.`;
     case "github_create_repo":
       return `Se requiere confirmación para crear el repositorio "${args.name}"${args.isPrivate ? " (privado)" : ""}.`;
+    case "calendar_create_event": {
+      const startStr = String(args.start ?? "");
+      let when: string;
+      try {
+        when = new Date(startStr).toLocaleString("es", { dateStyle: "full", timeStyle: "short" });
+      } catch {
+        when = startStr;
+      }
+      const mins = args.duration_minutes as number;
+      const emails = (args.attendees as string[] | undefined)?.filter(Boolean) ?? [];
+      const invite =
+        emails.length > 0 ? `\nInvitados: ${emails.join(", ")}.` : "";
+      return `Se requiere confirmación para crear la reunión "${args.title}" (${mins} min), inicio: ${when}.${invite}`;
+    }
+    case "calendar_cancel_event":
+      return `Se requiere confirmación para eliminar del calendario el evento con id \`${args.event_id}\`. Esta acción no se puede deshacer desde el agente.`;
+    case "calendar_reschedule_event": {
+      const ns = String(args.new_start ?? "");
+      let when: string;
+      try {
+        when = new Date(ns).toLocaleString("es", { dateStyle: "full", timeStyle: "short" });
+      } catch {
+        when = ns;
+      }
+      const dur =
+        args.duration_minutes != null
+          ? ` Duración indicada: ${args.duration_minutes} min.`
+          : " Se conservará la duración actual del evento.";
+      return `Se requiere confirmación para reagendar el evento \`${args.event_id}\` a: ${when}.${dur}`;
+    }
     case "write_file": {
       const path = String(args.path ?? "");
       const content = String(args.content ?? "");

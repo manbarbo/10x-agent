@@ -1,5 +1,10 @@
 export { createServerClient, createBrowserClient, type DbClient } from "./client";
 export { encrypt, decrypt } from "./crypto";
+export {
+  mergeGoogleTokenResponse,
+  getGoogleCalendarAccessToken,
+  type GoogleCalendarTokenBundle,
+} from "./google-calendar-auth";
 export * from "./queries/profiles";
 export * from "./queries/sessions";
 export * from "./queries/messages";

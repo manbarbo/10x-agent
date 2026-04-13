@@ -1,6 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import type { DbClient } from "@agents/db";
+import { getGoogleCalendarAccessToken, type DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG } from "@agents/types";
 import { TOOL_SCHEMAS } from "./schemas";
@@ -10,6 +10,83 @@ import { executeReadFile, executeWriteFile, executeEditFile } from "./fileTools"
 
 const GITHUB_API = "https://api.github.com";
 const GITHUB_UA = "10x-builders-agent/1.0";
+const GOOGLE_CALENDAR_API = "https://www.googleapis.com/calendar/v3";
+
+/** Inclusive start and exclusive end of `dateStr` (YYYY-MM-DD) in `timeZone`, as UTC ISO strings for the Calendar API. */
+function zonedDayRangeRFC3339(dateStr: string, timeZone: string): { timeMin: string; timeMax: string } {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
+    throw new Error("Invalid date format, use YYYY-MM-DD");
+  }
+  const dayFmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const anchor = Date.UTC(y, mo - 1, d, 12, 0, 0);
+  const lo = anchor - 48 * 3600 * 1000;
+  const hi = anchor + 48 * 3600 * 1000;
+
+  let first: number | null = null;
+  for (let t = lo; t < hi; t += 60000) {
+    if (dayFmt.format(new Date(t)) === dateStr) {
+      first = t;
+      break;
+    }
+  }
+  if (first === null) {
+    throw new Error(`Could not resolve local day ${dateStr} in ${timeZone}`);
+  }
+  while (first > lo && dayFmt.format(new Date(first - 1)) === dateStr) {
+    first -= 1;
+  }
+
+  let lastExc: number | null = null;
+  for (let t = first + 1; t < first + 48 * 3600 * 1000; t += 60000) {
+    if (dayFmt.format(new Date(t)) !== dateStr) {
+      lastExc = t;
+      break;
+    }
+  }
+  if (lastExc === null) {
+    lastExc = first + 24 * 3600 * 1000;
+  } else {
+    while (lastExc > first && dayFmt.format(new Date(lastExc - 1)) === dateStr) {
+      lastExc -= 1;
+    }
+  }
+
+  return {
+    timeMin: new Date(first).toISOString(),
+    timeMax: new Date(lastExc).toISOString(),
+  };
+}
+
+async function calFetch(token: string, path: string, init?: RequestInit): Promise<unknown> {
+  const res = await fetch(`${GOOGLE_CALENDAR_API}/${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(`Google Calendar API ${res.status}: ${text}`);
+  }
+  if (!text) return {};
+  return JSON.parse(text) as unknown;
+}
+
+function parseEventInstant(ev: Record<string, unknown>, key: "start" | "end"): number {
+  const seg = ev[key] as Record<string, unknown> | undefined;
+  if (!seg) return NaN;
+  if (typeof seg.dateTime === "string") return Date.parse(seg.dateTime);
+  if (typeof seg.date === "string") return Date.parse(`${seg.date}T00:00:00Z`);
+  return NaN;
+}
 
 export interface ToolContext {
   db: DbClient;
@@ -238,6 +315,130 @@ export const TOOL_HANDLERS: ToolHandlers = {
         input.schedule_type === "one_time"
           ? `Tarea programada para el ${readableTime} (${tz}). Recibirás el resultado por Telegram.`
           : `Tarea recurrente creada con expresión "${input.cron_expr}". Próxima ejecución: ${readableTime} (${tz}).`,
+    };
+  },
+
+  calendar_list_events: async (
+    input: { date: string; timezone?: string },
+    ctx: ToolContext
+  ) => {
+    const token = await getGoogleCalendarAccessToken(ctx.db, ctx.userId);
+    if (!token) throw new Error("Google Calendar no conectado");
+    const { getProfile } = await import("@agents/db");
+    const profile = await getProfile(ctx.db, ctx.userId);
+    const tz = input.timezone ?? profile.timezone ?? "UTC";
+    const { timeMin, timeMax } = zonedDayRangeRFC3339(input.date, tz);
+    const path = `calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=50&timeMin=${encodeURIComponent(
+      timeMin
+    )}&timeMax=${encodeURIComponent(timeMax)}`;
+    const data = (await calFetch(token, path)) as { items?: Array<Record<string, unknown>> };
+    const items = data.items ?? [];
+    return {
+      date: input.date,
+      timezone: tz,
+      events: items.map((e) => ({
+        id: e.id,
+        summary: e.summary ?? "(sin título)",
+        start: e.start,
+        end: e.end,
+        htmlLink: e.htmlLink,
+        status: e.status,
+      })),
+    };
+  },
+
+  calendar_create_event: async (
+    input: {
+      title: string;
+      start: string;
+      duration_minutes: number;
+      timezone?: string;
+      description?: string;
+      attendees?: string[];
+    },
+    ctx: ToolContext
+  ) => {
+    const token = await getGoogleCalendarAccessToken(ctx.db, ctx.userId);
+    if (!token) throw new Error("Google Calendar no conectado");
+    const startMs = Date.parse(input.start);
+    if (Number.isNaN(startMs)) {
+      throw new Error(
+        "Fecha de inicio inválida; usa ISO 8601 con zona u offset (ej. 2026-04-12T15:00:00-05:00)"
+      );
+    }
+    const endMs = startMs + input.duration_minutes * 60 * 1000;
+    const body: Record<string, unknown> = {
+      summary: input.title,
+      description: input.description ?? "",
+      start: { dateTime: new Date(startMs).toISOString() },
+      end: { dateTime: new Date(endMs).toISOString() },
+    };
+    if (input.attendees?.length) {
+      body.attendees = input.attendees.map((email: string) => ({ email }));
+    }
+    const created = (await calFetch(token, "calendars/primary/events", {
+      method: "POST",
+      body: JSON.stringify(body),
+    })) as Record<string, unknown>;
+    return {
+      message: "Evento creado",
+      event_id: created.id,
+      html_link: created.htmlLink,
+      start: created.start,
+      end: created.end,
+    };
+  },
+
+  calendar_cancel_event: async (input: { event_id: string }, ctx: ToolContext) => {
+    const token = await getGoogleCalendarAccessToken(ctx.db, ctx.userId);
+    if (!token) throw new Error("Google Calendar no conectado");
+    const path = `calendars/primary/events/${encodeURIComponent(input.event_id)}`;
+    const res = await fetch(`${GOOGLE_CALENDAR_API}/${path}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      throw new Error(`Google Calendar API ${res.status}: ${text}`);
+    }
+    return { message: "Evento eliminado", event_id: input.event_id };
+  },
+
+  calendar_reschedule_event: async (
+    input: { event_id: string; new_start: string; duration_minutes?: number; timezone?: string }, // timezone reserved for future all-day / local parsing
+    ctx: ToolContext
+  ) => {
+    const token = await getGoogleCalendarAccessToken(ctx.db, ctx.userId);
+    if (!token) throw new Error("Google Calendar no conectado");
+    const evPath = `calendars/primary/events/${encodeURIComponent(input.event_id)}`;
+    const existing = (await calFetch(token, evPath)) as Record<string, unknown>;
+    const startMsExisting = parseEventInstant(existing, "start");
+    const endMsExisting = parseEventInstant(existing, "end");
+    if (Number.isNaN(startMsExisting) || Number.isNaN(endMsExisting)) {
+      throw new Error("No se pudo interpretar el evento existente (¿evento de día completo?)");
+    }
+    const durMs =
+      input.duration_minutes != null
+        ? input.duration_minutes * 60 * 1000
+        : endMsExisting - startMsExisting;
+    const newStartMs = Date.parse(input.new_start);
+    if (Number.isNaN(newStartMs)) {
+      throw new Error("new_start inválido; usa ISO 8601 con offset o Z");
+    }
+    const newEndMs = newStartMs + durMs;
+    const updated = (await calFetch(token, evPath, {
+      method: "PATCH",
+      body: JSON.stringify({
+        start: { dateTime: new Date(newStartMs).toISOString() },
+        end: { dateTime: new Date(newEndMs).toISOString() },
+      }),
+    })) as Record<string, unknown>;
+    return {
+      message: "Evento reagendado",
+      event_id: updated.id,
+      start: updated.start,
+      end: updated.end,
+      html_link: updated.htmlLink,
     };
   },
 };

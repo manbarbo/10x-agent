@@ -22,6 +22,31 @@ export const TOOL_SCHEMAS = {
     description: z.string().optional().default(""),
     isPrivate: z.boolean().optional().default(false),
   }),
+  calendar_list_events: z.object({
+    date: z.string().describe("Calendar date YYYY-MM-DD"),
+    timezone: z.string().optional().describe("IANA timezone (e.g. America/Bogota). Defaults to user profile timezone or UTC."),
+  }),
+  calendar_create_event: z.object({
+    title: z.string(),
+    start: z
+      .string()
+      .describe("ISO 8601 start datetime (include timezone offset or Z, e.g. 2026-04-12T15:00:00-05:00)"),
+    duration_minutes: z.number().int().positive().max(24 * 60),
+    timezone: z.string().optional().describe("Unused if start includes offset; reserved for future use"),
+    description: z.string().optional().default(""),
+    attendees: z.array(z.string().email()).optional().default([]),
+  }),
+  calendar_cancel_event: z.object({
+    event_id: z.string().min(1),
+  }),
+  calendar_reschedule_event: z.object({
+    event_id: z.string().min(1),
+    new_start: z
+      .string()
+      .describe("ISO 8601 new start datetime (include timezone offset or Z)"),
+    duration_minutes: z.number().int().positive().max(24 * 60).optional(),
+    timezone: z.string().optional(),
+  }),
   read_file: z.object({
     path: z.string().describe("Absolute path or path relative to the server process working directory."),
     offset: z.number().int().min(1).optional().describe("1-based line number to start reading from. Defaults to 1."),

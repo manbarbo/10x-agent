@@ -182,6 +182,96 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       "Crea una tarea programada que el agente ejecutará automáticamente y notificará por Telegram.",
   },
   {
+    id: "calendar_list_events",
+    name: "calendar_list_events",
+    description:
+      "Lists the user's Google Calendar events for a single calendar day in a given IANA timezone (defaults to UTC). Returns event id, summary, start, end, and htmlLink.",
+    risk: "low",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "Calendar date YYYY-MM-DD" },
+        timezone: {
+          type: "string",
+          description: "IANA timezone (e.g. America/Bogota). Defaults to UTC if omitted.",
+        },
+      },
+      required: ["date"],
+    },
+    displayName: "Calendario: listar reuniones",
+    displayDescription: "Lista eventos de Google Calendar para un día concreto.",
+  },
+  {
+    id: "calendar_create_event",
+    name: "calendar_create_event",
+    description:
+      "Creates a Google Calendar event on the user's primary calendar. Requires human confirmation. Use ISO 8601 for start (may include offset). Provide duration_minutes and optional attendee emails.",
+    risk: "medium",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        start: { type: "string", description: "ISO 8601 start datetime" },
+        duration_minutes: { type: "number", description: "Meeting length in minutes" },
+        timezone: {
+          type: "string",
+          description: "IANA timezone for the event when start has no offset (e.g. America/Bogota).",
+        },
+        description: { type: "string", description: "Optional event description" },
+        attendees: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of attendee email addresses",
+        },
+      },
+      required: ["title", "start", "duration_minutes"],
+    },
+    displayName: "Calendario: crear reunión",
+    displayDescription: "Crea un evento en Google Calendar (requiere confirmación).",
+  },
+  {
+    id: "calendar_cancel_event",
+    name: "calendar_cancel_event",
+    description:
+      "Permanently deletes a Google Calendar event by id from the primary calendar. Requires human confirmation.",
+    risk: "medium",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string", description: "Google Calendar event id (from list events)" },
+      },
+      required: ["event_id"],
+    },
+    displayName: "Calendario: cancelar reunión",
+    displayDescription: "Elimina un evento del calendario (requiere confirmación).",
+  },
+  {
+    id: "calendar_reschedule_event",
+    name: "calendar_reschedule_event",
+    description:
+      "Moves a Google Calendar event to a new start time on the primary calendar. Preserves duration unless duration_minutes is provided. Requires human confirmation.",
+    risk: "medium",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string" },
+        new_start: { type: "string", description: "ISO 8601 new start datetime" },
+        duration_minutes: {
+          type: "number",
+          description: "Optional; if omitted, keeps the event's current duration",
+        },
+        timezone: { type: "string", description: "IANA timezone when new_start has no offset" },
+      },
+      required: ["event_id", "new_start"],
+    },
+    displayName: "Calendario: reagendar reunión",
+    displayDescription: "Cambia la hora de un evento (requiere confirmación).",
+  },
+  {
     id: "bash",
     name: "bash",
     description:

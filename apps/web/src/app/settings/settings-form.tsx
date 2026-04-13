@@ -11,9 +11,17 @@ interface Props {
   toolSettings: Array<{ tool_id: string; enabled: boolean }>;
   telegramLinked: boolean;
   githubConnected: boolean;
+  googleCalendarConnected: boolean;
 }
 
-export function SettingsForm({ userId, profile, toolSettings, telegramLinked, githubConnected }: Props) {
+export function SettingsForm({
+  userId,
+  profile,
+  toolSettings,
+  telegramLinked,
+  githubConnected,
+  googleCalendarConnected,
+}: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -21,6 +29,10 @@ export function SettingsForm({ userId, profile, toolSettings, telegramLinked, gi
     githubConnected ? "connected" : "disconnected"
   );
   const [disconnecting, setDisconnecting] = useState(false);
+  const [googleCalStatus, setGoogleCalStatus] = useState<"connected" | "disconnected">(
+    googleCalendarConnected ? "connected" : "disconnected"
+  );
+  const [disconnectingGoogle, setDisconnectingGoogle] = useState(false);
 
   const [name, setName] = useState((profile?.name as string) ?? "");
   const [agentName, setAgentName] = useState((profile?.agent_name as string) ?? "Agente");
@@ -81,6 +93,19 @@ export function SettingsForm({ userId, profile, toolSettings, telegramLinked, gi
       }
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function handleDisconnectGoogleCalendar() {
+    setDisconnectingGoogle(true);
+    try {
+      const res = await fetch("/api/integrations/google/disconnect", { method: "POST" });
+      if (res.ok) {
+        setGoogleCalStatus("disconnected");
+        router.refresh();
+      }
+    } finally {
+      setDisconnectingGoogle(false);
     }
   }
 
@@ -184,6 +209,40 @@ export function SettingsForm({ userId, profile, toolSettings, telegramLinked, gi
               className="inline-block rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
             >
               Conectar GitHub
+            </a>
+          </div>
+        )}
+      </section>
+
+      {/* Google Calendar */}
+      <section className="space-y-4">
+        <h2 className="text-base font-semibold">Google Calendar</h2>
+        {googleCalStatus === "connected" ? (
+          <div className="flex items-center justify-between rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+              <span className="text-sm font-medium text-green-700 dark:text-green-400">Conectado</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleDisconnectGoogleCalendar}
+              disabled={disconnectingGoogle}
+              className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20"
+            >
+              {disconnectingGoogle ? "Desconectando..." : "Desconectar"}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-sm text-neutral-500">
+              Conecta Google Calendar para que el agente pueda consultar, crear, cancelar o reagendar reuniones
+              (las acciones que modifican el calendario requieren tu confirmación en el chat).
+            </p>
+            <a
+              href="/api/integrations/google"
+              className="inline-block rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              Conectar Google Calendar
             </a>
           </div>
         )}
