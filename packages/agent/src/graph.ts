@@ -105,6 +105,31 @@ function buildConfirmationMessage(
 
 const MAX_TOOL_ITERATIONS = 6;
 
+/** Count assistant messages with tool_calls after the last HumanMessage (current user turn only). */
+function assistantToolRoundsSinceLastHuman(messages: BaseMessage[]): number {
+  let lastHumanIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] instanceof HumanMessage) {
+      lastHumanIdx = i;
+      break;
+    }
+  }
+  let count = 0;
+  for (let i = lastHumanIdx + 1; i < messages.length; i++) {
+    const m = messages[i];
+    if (m instanceof AIMessage && m.tool_calls?.length) count += 1;
+  }
+  return count;
+}
+
+function snapshotHasPendingInterrupt(snapshot: {
+  tasks?: ReadonlyArray<{ interrupts?: ReadonlyArray<unknown> }>;
+}): boolean {
+  return (snapshot.tasks ?? []).some(
+    (t) => Array.isArray(t.interrupts) && t.interrupts.length > 0
+  );
+}
+
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const {
     message,
@@ -155,6 +180,20 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     const lastMsg = state.messages[state.messages.length - 1];
     if (!(lastMsg instanceof AIMessage) || !lastMsg.tool_calls?.length) {
       return {};
+    }
+
+    const rounds = assistantToolRoundsSinceLastHuman(state.messages);
+    if (rounds > MAX_TOOL_ITERATIONS) {
+      const synthetic: BaseMessage[] = lastMsg.tool_calls.map(
+        (tc) =>
+          new ToolMessage({
+            content: JSON.stringify({
+              error: `Límite de ${MAX_TOOL_ITERATIONS} rondas de herramientas en este turno alcanzado.`,
+            }),
+            tool_call_id: tc.id!,
+          })
+      );
+      return { messages: synthetic };
     }
 
     const results: BaseMessage[] = [];
@@ -260,10 +299,6 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   function shouldContinue(state: typeof GraphState.State): string {
     const lastMsg = state.messages[state.messages.length - 1];
     if (lastMsg instanceof AIMessage && lastMsg.tool_calls?.length) {
-      const iterations = state.messages.filter(
-        (m) => m instanceof AIMessage && (m as AIMessage).tool_calls?.length
-      ).length;
-      if (iterations >= MAX_TOOL_ITERATIONS) return "end";
       return "tools";
     }
     return "end";
@@ -293,6 +328,17 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       config
     );
   } else {
+    // If the thread is paused on HITL interrupt, appending a HumanMessage would leave
+    // an AIMessage with tool_calls without ToolMessages and OpenAI returns 400.
+    const snapshot = await app.getState(config);
+    if (snapshotHasPendingInterrupt(snapshot)) {
+      return {
+        response:
+          "Hay una acción pendiente de confirmación en esta conversación. Usa Aprobar o Cancelar en el mensaje anterior antes de escribir otra cosa.",
+        toolCalls: [],
+      };
+    }
+
     // New message — persist to DB (audit log) then append to checkpointer state.
     // The checkpointer is the sole source of truth for message history; we never
     // reconstruct from DB to avoid duplicating messages across invocations.
