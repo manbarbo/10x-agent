@@ -3,6 +3,10 @@ import { z } from "zod";
 export const TOOL_SCHEMAS = {
   get_user_preferences: z.object({}),
   list_enabled_tools: z.object({}),
+  days_to_date: z.object({
+    date: z.string().describe("Date in ISO 8601 format (YYYY-MM-DD)"),
+  }),
+  next_payment_date: z.object({}),
   github_list_repos: z.object({
     per_page: z.number().max(30).optional().default(10),
   }),

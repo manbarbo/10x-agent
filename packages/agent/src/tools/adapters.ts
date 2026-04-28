@@ -228,6 +228,24 @@ export const TOOL_HANDLERS: ToolHandlers = {
     return { enabled };
   },
 
+  days_to_date: async (input: { date: string }) => {
+    const days = Math.floor((Date.parse(input.date) - Date.now()) / (1000 * 60 * 60 * 24));
+    return { days };
+  },
+  next_payment_date: async (input: { }) => {
+    const today = new Date();
+    const day = today.getDate();
+    const month = today.getMonth();
+    const year = today.getFullYear();
+
+    const nextPaymentDate = new Date(year, month, 25);
+    if (day > 25) {
+      // Ir al próximo mes
+      nextPaymentDate.setMonth(month );
+    }
+    return { date: nextPaymentDate.toISOString() };
+  },
+
   github_list_repos: async (input, ctx) =>
     executeGitHubTool("github_list_repos", input, ctx.githubToken!),
 
