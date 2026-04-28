@@ -1,6 +1,5 @@
 import {
   StateGraph,
-  Annotation,
   interrupt,
   Command,
   INTERRUPT,
@@ -19,7 +18,9 @@ import {
   toolRequiresConfirmation,
   getToolRisk,
 } from "@agents/types";
-import { createChatModel } from "./model";
+import { createChatModel, createCompactionModel } from "./model";
+import { GraphState } from "./state";
+import { buildCompactionNode } from "./nodes/compaction_node";
 import { buildLangChainTools, TOOL_HANDLERS } from "./tools/adapters";
 import type { ToolContext } from "./tools/adapters";
 import {
@@ -29,16 +30,6 @@ import {
   findExistingPendingToolCall,
 } from "@agents/db";
 import { getCheckpointer } from "./checkpointer";
-
-const GraphState = Annotation.Root({
-  messages: Annotation<BaseMessage[]>({
-    reducer: (prev, next) => [...prev, ...next],
-    default: () => [],
-  }),
-  sessionId: Annotation<string>(),
-  userId: Annotation<string>(),
-  systemPrompt: Annotation<string>(),
-});
 
 export interface AgentInput {
   message?: string;
@@ -175,6 +166,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   } = input;
 
   const model = createChatModel();
+  const compactionModel = createCompactionModel();
+  const compactionNode = buildCompactionNode(compactionModel);
   const toolCtx: ToolContext = { db, userId, sessionId, enabledTools, integrations, githubToken };
   const lcTools = buildLangChainTools(toolCtx);
 
@@ -335,14 +328,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   }
 
   const graph = new StateGraph(GraphState)
+    .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "agent")
+    .addEdge("__start__", "compaction")
+    .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",
       end: "__end__",
     })
-    .addEdge("tools", "agent");
+    .addEdge("tools", "compaction");
 
   const checkpointer = await getCheckpointer();
   const app = graph.compile({ checkpointer });

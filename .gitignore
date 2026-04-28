@@ -7,3 +7,5 @@ dist/
 *.tsbuildinfo
 .temp/
 .branches/
+# Evidencia local del nodo compaction (ver COMPACTION_LOG_PATH)
+logs/
