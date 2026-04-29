@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createServerClient, clearSessionMessages } from "@agents/db";
+import { flushMemory } from "@agents/agent";
 
 export async function POST(
   _request: Request,
@@ -28,6 +29,8 @@ export async function POST(
   }
 
   const db = createServerClient();
+  // Debe completarse antes de borrar mensajes (flush lee agent_messages).
+  await flushMemory({ db, userId: user.id, sessionId });
   await clearSessionMessages(db, sessionId);
 
   return NextResponse.json({ ok: true });

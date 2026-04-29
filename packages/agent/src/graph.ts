@@ -21,6 +21,7 @@ import {
 import { createChatModel, createCompactionModel } from "./model";
 import { GraphState } from "./state";
 import { buildCompactionNode } from "./nodes/compaction_node";
+import { buildMemoryInjectionNode } from "./nodes/memory_injection_node";
 import { buildLangChainTools, TOOL_HANDLERS } from "./tools/adapters";
 import type { ToolContext } from "./tools/adapters";
 import {
@@ -168,6 +169,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const model = createChatModel();
   const compactionModel = createCompactionModel();
   const compactionNode = buildCompactionNode(compactionModel);
+  const memoryInjectionNode = buildMemoryInjectionNode(db, userId);
   const toolCtx: ToolContext = { db, userId, sessionId, enabledTools, integrations, githubToken };
   const lcTools = buildLangChainTools(toolCtx);
 
@@ -328,10 +330,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   }
 
   const graph = new StateGraph(GraphState)
+    .addNode("memory_injection", memoryInjectionNode)
     .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "compaction")
+    .addEdge("__start__", "memory_injection")
+    .addEdge("memory_injection", "compaction")
     .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",

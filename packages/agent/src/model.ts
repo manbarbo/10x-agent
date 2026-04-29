@@ -1,4 +1,4 @@
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
 
 const openRouterConfig = {
   baseURL: "https://openrouter.ai/api/v1",
@@ -28,6 +28,18 @@ export function createCompactionModel() {
     modelName:
       process.env.COMPACTION_MODEL_NAME ?? "anthropic/claude-3-5-haiku-20241022",
     temperature: 0.1,
+    configuration: { ...openRouterConfig },
+    apiKey,
+  });
+}
+
+/** Embeddings via OpenRouter (same dimensions as OpenAI text-embedding-3-small: 1536). */
+export function createEmbeddingModel() {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
+
+  return new OpenAIEmbeddings({
+    model: process.env.EMBEDDING_MODEL_NAME ?? "openai/text-embedding-3-small",
     configuration: { ...openRouterConfig },
     apiKey,
   });
