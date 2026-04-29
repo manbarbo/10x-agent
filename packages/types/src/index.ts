@@ -12,6 +12,8 @@ export interface Profile {
   agent_name: string;
   agent_system_prompt: string;
   onboarding_completed: boolean;
+  /** Cosine similarity 0–1: merge when neighbor ≥ this (default 0.88 en BD). */
+  memory_merge_similarity_threshold?: number;
   created_at: string;
   updated_at: string;
 }

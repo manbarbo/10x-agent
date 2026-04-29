@@ -76,3 +76,52 @@ export async function incrementRetrievalCount(db: DbClient, ids: string[]): Prom
   });
   if (error) throw error;
 }
+
+/** Same-type neighbors for merge/dedup (cosine via pgvector). */
+export async function matchMemoriesForMerge(
+  db: DbClient,
+  userId: string,
+  memoryType: MemoryType,
+  queryEmbedding: number[],
+  matchCount = 5
+): Promise<MatchedMemory[]> {
+  const { data, error } = await db.rpc("match_memories_for_merge", {
+    query_embedding: queryEmbedding,
+    match_user_id: userId,
+    memory_type: memoryType,
+    match_count: matchCount,
+  });
+  if (error) throw error;
+  const rows = (data ?? []) as Array<{
+    id: string;
+    type: string;
+    content: string;
+    retrieval_count: number;
+    similarity: number;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    type: r.type as MemoryType,
+    content: r.content,
+    retrieval_count: r.retrieval_count,
+    similarity: r.similarity,
+  }));
+}
+
+export async function updateMemoryContentEmbedding(
+  db: DbClient,
+  memoryId: string,
+  content: string,
+  embedding: number[]
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from("memories")
+    .update({
+      content,
+      embedding,
+      updated_at: now,
+    })
+    .eq("id", memoryId);
+  if (error) throw error;
+}
