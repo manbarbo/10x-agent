@@ -74,6 +74,10 @@ export async function POST(request: Request) {
       resumeDecision: action as "approve" | "reject",
       userId: user.id,
       sessionId: toolCall.session_id,
+      langfuse: {
+        tags: ["channel:web", "feature:chat-hitl-resume"],
+        traceMetadata: { channel: "web", feature: "chat-hitl-resume" },
+      },
       systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({

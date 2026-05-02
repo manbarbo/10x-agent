@@ -15,7 +15,22 @@ const allowedDevOrigins = [
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@agents/agent", "@agents/db", "@agents/types"],
-  serverExternalPackages: ["@langchain/core", "@langchain/langgraph", "@langchain/openai"],
+  serverExternalPackages: [
+    "@langchain/core",
+    "@langchain/langgraph",
+    "@langchain/openai",
+    // Una sola copia de OTEL en runtime (evita que Turbopack duplique el singleton de @opentelemetry/api;
+    // sin esto, Langfuse puede loguear callbacks pero no exportar trazas al backend).
+    "@opentelemetry/api",
+    "@opentelemetry/core",
+    "@opentelemetry/sdk-trace-base",
+    "@opentelemetry/sdk-trace-node",
+    "@opentelemetry/exporter-trace-otlp-http",
+    "@langfuse/core",
+    "@langfuse/tracing",
+    "@langfuse/otel",
+    "@langfuse/langchain",
+  ],
   allowedDevOrigins,
 };
 

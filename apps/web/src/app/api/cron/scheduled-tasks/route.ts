@@ -63,6 +63,10 @@ async function buildAgentContextForTask(
   return {
     userId,
     sessionId,
+    langfuse: {
+      tags: ["channel:cron", "feature:scheduled-task"],
+      traceMetadata: { channel: "cron", feature: "scheduled-task" },
+    },
     systemPrompt:
       (profile?.agent_system_prompt as string) ??
       "Eres un asistente útil que ayuda al usuario a gestionar tareas.",

@@ -98,6 +98,10 @@ export async function POST(request: Request) {
       message,
       userId: user.id,
       sessionId: session.id,
+      langfuse: {
+        tags: ["channel:web", "feature:chat"],
+        traceMetadata: { channel: "web", feature: "chat" },
+      },
       systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({

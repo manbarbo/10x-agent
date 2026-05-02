@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -13,6 +13,7 @@
     "@agents/agent": "*",
     "@agents/db": "*",
     "@agents/types": "*",
+    "@langchain/core": "^1.0",
     "@sentry/nextjs": "^10.51.0",
     "@supabase/ssr": "^0.5",
     "@supabase/supabase-js": "^2",

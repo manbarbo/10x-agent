@@ -92,6 +92,10 @@ async function buildAgentContext(
   return {
     userId,
     sessionId,
+    langfuse: {
+      tags: ["channel:telegram"],
+      traceMetadata: { channel: "telegram" },
+    },
     systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
     db,
     enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({

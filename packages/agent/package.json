@@ -3,6 +3,10 @@
   "private": true,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./langfuse-otel": "./src/langfuse_otel.ts"
+  },
   "scripts": {
     "type-check": "tsc --noEmit"
   },
@@ -13,6 +17,13 @@
     "@langchain/langgraph": "^1.0",
     "@langchain/langgraph-checkpoint-postgres": "^1.0",
     "@langchain/openai": "^1.0",
+    "@langfuse/core": "^5.2.0",
+    "@langfuse/langchain": "^5.2.0",
+    "@langfuse/otel": "^5.2.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/core": "^2.7.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.208.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
     "croner": "^10.0.1",
     "zod": "^3"
   },
